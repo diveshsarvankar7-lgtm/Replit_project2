@@ -1,0 +1,178 @@
+Build (or complete, if this repo already exists) a "Digital Literacy
+Simulator" - a web app that trains senior citizens on smartphone use
+through a realistic virtual phone interface, with a facilitator admin
+panel. Read this entire spec before starting; it reflects real bugs found
+and fixed during earlier development, so follow it precisely rather than
+inventing your own version of any of these behaviors.
+
+## Stack
+Next.js (App Router), TypeScript, Tailwind, shadcn/ui, Supabase
+(Postgres + Auth not required for participants, just the database).
+
+## Participant intake (NOT a login)
+Single screen: Name + Age only, plus a language choice (English / हिन्दी /
+मराठी) as three large tappable buttons, not a dropdown. No password, no
+email. On submit, create a participants row and a sessions row in
+Supabase, store their IDs in localStorage, and clear any previously
+cached local progress data first so a new participant never inherits a
+previous participant's leftover session state.
+
+## The virtual phone
+One reusable phone-frame component (rounded device bezel, notch, live
+status bar with time/signal/wifi/battery) that every task renders inside
+- do not build separate ad-hoc phone containers per task or per level;
+every screen uses the same component for visual consistency.
+
+The Settings app must show a realistic list of ~15 real Android setting
+categories (Network & internet, Connected devices, Apps, Notifications,
+Battery, Sound, Display, Wallpaper, Accessibility, Security & privacy,
+Location, Safety & emergency, Passwords & accounts, System, About phone),
+with only the categories relevant to the current task actually functional
+- tapping any other row shows a brief "not needed for this task" hint,
+it should not be dead/invisible.
+
+The UPI payment task's QR step must render an actual QR-pattern visual
+(finder squares in three corners plus a data-module grid, not a plain box)
+with a scan-line sweep animation - it does not need to encode real data,
+just look authentic.
+
+## 12 tasks across 4 levels - every one auto-completes from real interaction
+
+CRITICAL: no task may have a manual "I did this" / "mark complete" button.
+Every task's completion must be derived automatically from the
+participant's actual state change in the phone (slider reached a
+threshold, toggle turned on, message actually sent, correct answer
+actually selected, etc.). A manual self-report button defeats the purpose
+of the training and the data collection.
+
+Level 1 - Everyday Basics: make text bigger (working drag slider, real-time
+resizing sample text), adjust brightness (working drag slider, real-time
+dimming preview), connect to Wi-Fi (working toggle + tappable network
+list).
+
+Level 2 - Communication & Internet: send a WhatsApp message (real chat UI,
+a suggested-message chip shown OUTSIDE the text input area - tapping the
+chip sends it immediately, it must not just pre-fill the input box), send
+a photo and voice message (tap a photo from a small gallery grid to send
+it, then press-and-hold the mic icon to simulate a 2-second voice
+recording - see Touch handling requirements below, this exact interaction
+has previously failed on real devices), search the internet (a real,
+empty, participant-typed search bar - do NOT pre-fill it with the answer;
+show live results for whatever is typed as they type, but the task only
+completes when they've searched specifically for a hospital-related term
+AND tapped Directions on the correct result).
+
+Level 3 - Digital Services & Independence: find a hospital using Maps
+(same empty-input, type-it-yourself requirement as the search task above),
+scan a QR code and make a demo payment (the realistic QR + scan animation
+above, then a receiver-name verification step, then amount entry, then a
+Confirm button - do NOT use a real PIN pad), set a medicine reminder (real
+time picker, label field, repeat-daily toggle).
+
+Level 4 - Safety & Problem Solving (decision-based, not step-sequence -
+track which choice was made, not just completion): identify a fake SMS
+between two realistic message bubbles, recognize an OTP scam via a 4-option
+decision on a simulated incoming call, respond to an emergency scenario
+(call a highlighted emergency contact, let the simulated call end, then
+share location via a share-sheet-style flow to the same contact) - track
+and store elapsed time for this task specifically since speed is the
+point of it.
+
+## Continuous flow - this is a required behavior change from a common
+## mistake: do NOT return to the dashboard after every single task.
+
+After a task completes, automatically advance directly to the next task
+in sequence (same level first, then the next level once unlocked) without
+detouring back to the dashboard. Only after the participant completes ALL
+12 tasks across all 4 levels should they see a final "thank you" screen
+(not a certificate/PDF - a simple congratulations message) with exactly
+one button: "Start New Session" - which clears local state and returns to
+the intake screen for the next participant.
+
+## Multi-language (English, Hindi, Marathi)
+
+One single translation dictionary/system used everywhere - every task
+title, instruction, hint, button label, status message, and phone-screen
+label (including Settings row names, app names, success messages) must
+pull from it. Do not hardcode strings in individual components and do not
+build a second, separate translation object anywhere - that has caused
+real bugs before where some text translated and other text on the same
+screen silently didn't.
+
+Hints: one hint revealed per tap of a "Hint" button, each tap advancing to
+a more specific hint (2-3 hints per task, vague to specific), tracked as a
+hints_used count per task attempt.
+
+## Touch handling requirements (real devices, not desktop testing)
+
+Every drag/press-and-hold control (sliders, the voice-record button) must:
+- have touch-action: none applied so mobile browsers don't intercept the
+  gesture as a scroll before your handler fires
+- call setPointerCapture(event.pointerId) on pointerdown
+- be tested with actual touch input (Chrome remote debugging on a real
+  Android phone), not just mouse clicks in a desktop preview - a
+  desktop-only test has previously passed while the same control was
+  completely unresponsive on a real touchscreen.
+
+Target devices are budget/mid-range Android phones with OEM skins (MIUI,
+Funtouch/OriginOS, realme UI, XOS, One UI) - these throttle background
+timers more aggressively than stock Android, so any timing-sensitive logic
+(the emergency task's elapsed time, the voice-recording duration) must be
+computed from Date.now() timestamp differences, not from counting interval
+ticks.
+
+## Database schema (Supabase)
+
+participants (id, name, age, language, created_at)
+sessions (id, participant_id, started_at, completed_at, current_level)
+task_attempts (id, session_id, level_number, task_key, started_at,
+completed_at, hints_used, wrong_taps, attempts, status, choice_correct,
+points_earned, metadata jsonb)
+
+Enable RLS with permissive policies (no per-user auth exists for
+participants, so policies should allow read/write broadly, not attempt to
+scope by a Supabase Auth user that doesn't exist).
+
+## Admin panel - password protected
+
+Route: /admin. This must be protected by a single shared password (not a
+full multi-user auth system - this is one facilitator/researcher's
+internal tool). Implementation requirements:
+- Store the password server-side as an environment variable, never
+  hardcoded in client-side code where it would be visible in the browser
+  bundle.
+- A simple login form gates access to /admin; on correct password, set an
+  httpOnly server-side session cookie so the gate persists across page
+  reloads without re-entering the password every time.
+- Wrong password shows a clear error, no hint about the actual password,
+  no way to bypass by directly navigating to /admin routes without the
+  cookie.
+- Give me the actual password value to use as the environment variable,
+  or generate one and tell me clearly what it is before finishing.
+
+Admin panel contents:
+- Summary stat cards: total participants, average completion %, average
+  hints used, average session time.
+- A sortable participant table: name, age, level reached, tasks completed
+  / 12, total time, hints used, wrong taps, completion date.
+- Each participant row expandable to show a per-task breakdown: every one
+  of the 12 tasks with status, attempts, hints used, wrong taps, and time
+  for that specific participant - this is for individual case-study detail
+  in a research report, not just aggregate numbers.
+- A per-task difficulty table across all participants: completion rate,
+  average hints, average time per task - to identify which tasks are
+  hardest.
+- A Level 4 safety-literacy card specifically: % who chose correctly on
+  first try vs after a wrong attempt, for the SMS and OTP tasks.
+- CSV export of the full participant table.
+- A print-friendly summary view (clean, no nav chrome) for pasting into a
+  report.
+
+## Accessibility baseline
+Minimum 44px touch targets, minimum 18px body text, no color-only status
+indicators, visible focus states, plain non-technical instruction language
+throughout.
+
+Before finishing, tell me: (1) the admin password you set, (2) which real
+devices or emulators you actually tested touch interactions on, and (3)
+confirm no task anywhere has a manual completion button.
